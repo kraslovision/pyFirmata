@@ -2,8 +2,10 @@ from __future__ import division, unicode_literals
 
 import inspect
 import time
+from socket import MSG_PEEK
 
 import serial
+import socket
 
 from .util import pin_list_to_board_dict, to_two_bytes, two_byte_iter_to_str
 
@@ -75,6 +77,61 @@ class NoInputWarning(RuntimeWarning):
     pass
 
 
+class Connection(object):
+    """Simple abstraction of connection used by the Board class"""
+    def __init__(self, port):
+        self.port = port
+
+    def bytes_available(self):
+        raise NotImplementedError("bytes_available not implemented")
+
+    def write(self, what):
+        raise NotImplementedError("write not implemented")
+
+
+class SerialConnection(Connection):
+    """This is a serial connection to an Arduino running StandardFirmata.
+    I just copied and pasted the existing serial code here"""
+    def __init__(self, port, baudrate=57600, timeout=None):
+        Connection.__init__(self, port)
+        self.sp = serial.Serial(port, baudrate, timeout=timeout)
+
+    def bytes_available(self):
+        return self.sp.inWaiting() > 0
+
+    def read(self):
+        return self.sp.read()
+
+    def write(self, what):
+        return self.sp.write(what)
+
+    def close(self):
+        return self.sp.close()
+
+
+class SocketConnection(Connection):
+    """A TCP/IP socket connected to an Arduino running StandardFirmataEthernet."""
+    def __init__(self, port):
+        Connection.__init__(self, port)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        parts = port.replace('tcp://', '').split(':')
+        self.sock.setblocking(False)
+        self.sock.connect((parts[0], int(parts[1])))
+
+    def bytes_available(self):
+        return len(self.sock.recv(1024, MSG_PEEK))
+
+    def write(self, what):
+        self.sock.sendall(what)
+
+    def read(self):
+        return self.sock.recv(1)
+
+    def close(self):
+        return self.sock.close()
+
+
 class Board(object):
     """The Base class for any board."""
     firmata_version = None
@@ -86,7 +143,18 @@ class Board(object):
     _parsing_sysex = False
 
     def __init__(self, port, layout=None, baudrate=57600, name=None, timeout=None):
-        self.sp = serial.Serial(port, baudrate, timeout=timeout)
+        if port == '' or port is None:
+            from . import mockup
+            self.conn = mockup.MockupSerial(port,baudrate)
+
+        # To support Firmata over a network: 'tcp://[ip]:[port]'
+        elif port.startswith('tcp://'):
+            self.conn = SocketConnection(port)
+
+        # Otherwise do as we always did
+        else:
+            self.conn = SerialConnection(port, baudrate, timeout=timeout)
+
         # Allow 5 secs for Arduino's auto-reset to happen
         # Alas, Firmata blinks its version before printing it to serial
         # For 2.3, even 5 seconds might not be enough.
@@ -109,7 +177,7 @@ class Board(object):
         # probably isn't any Firmata installed
 
     def __str__(self):
-        return "Board{0.name} on {0.sp.port}".format(self)
+        return "Board{0.name} on {0.conn.port}".format(self)
 
     def __del__(self):
         """
@@ -120,7 +188,7 @@ class Board(object):
         self.exit()
 
     def send_as_two_bytes(self, val):
-        self.sp.write(bytearray([val % 128, val >> 7]))
+        self.conn.write(bytearray([val % 128, val >> 7]))
 
     def setup_layout(self, board_layout):
         """
@@ -254,10 +322,10 @@ class Board(object):
         msg = bytearray([START_SYSEX, sysex_cmd])
         msg.extend(data)
         msg.append(END_SYSEX)
-        self.sp.write(msg)
+        self.conn.write(msg)
 
     def bytes_available(self):
-        return self.sp.inWaiting()
+        return self.conn.bytes_available()
 
     def iterate(self):
         """
@@ -265,7 +333,7 @@ class Board(object):
         This method should be called in a main loop or in an :class:`Iterator`
         instance to keep this boards pin values up to date.
         """
-        byte = self.sp.read()
+        byte = self.conn.read()
         if not byte:
             return
         data = ord(byte)
@@ -279,23 +347,23 @@ class Board(object):
                 return
             received_data.append(data & 0x0F)
             while len(received_data) < handler.bytes_needed:
-                received_data.append(ord(self.sp.read()))
+                received_data.append(ord(self.conn.read()))
         elif data == START_SYSEX:
-            data = ord(self.sp.read())
+            data = ord(self.conn.read())
             handler = self._command_handlers.get(data)
             if not handler:
                 return
-            data = ord(self.sp.read())
+            data = ord(self.conn.read())
             while data != END_SYSEX:
                 received_data.append(data)
-                data = ord(self.sp.read())
+                data = ord(self.conn.read())
         else:
             try:
                 handler = self._command_handlers[data]
             except KeyError:
                 return
             while len(received_data) < handler.bytes_needed:
-                received_data.append(ord(self.sp.read()))
+                received_data.append(ord(self.conn.read()))
         # Handle the data
         try:
             handler(*received_data)
@@ -335,7 +403,7 @@ class Board(object):
                 if pin.mode == SERVO:
                     pin.mode = OUTPUT
         if hasattr(self, 'sp'):
-            self.sp.close()
+            self.conn.close()
 
     # Command handlers
     def _handle_analog_message(self, pin_nr, lsb, msb):
@@ -403,7 +471,7 @@ class Port(object):
         """Enable reporting of values for the whole port."""
         self.reporting = True
         msg = bytearray([REPORT_DIGITAL + self.port_number, 1])
-        self.board.sp.write(msg)
+        self.board.conn.write(msg)
 
         for pin in self.pins:
             if pin.mode == INPUT:
@@ -413,7 +481,7 @@ class Port(object):
         """Disable the reporting of the port."""
         self.reporting = False
         msg = bytearray([REPORT_DIGITAL + self.port_number, 0])
-        self.board.sp.write(msg)
+        self.board.conn.write(msg)
 
     def write(self):
         """Set the output pins of the port to the correct state."""
@@ -427,7 +495,7 @@ class Port(object):
 #        print("type self.portnumber", type(self.port_number))
 #        print("type pinnr", type(pin_nr))
         msg = bytearray([DIGITAL_MESSAGE + self.port_number, mask % 128, mask >> 7])
-        self.board.sp.write(msg)
+        self.board.conn.write(msg)
 
     def _update(self, mask):
         """Update the values for the pins marked as input with the mask."""
@@ -472,7 +540,7 @@ class Pin(object):
 
         # Set mode with SET_PIN_MODE message
         self._mode = mode
-        self.board.sp.write(bytearray([SET_PIN_MODE, self.pin_number, mode]))
+        self.board.conn.write(bytearray([SET_PIN_MODE, self.pin_number, mode]))
         if mode == INPUT:
             self.enable_reporting()
 
@@ -492,7 +560,7 @@ class Pin(object):
         if self.type == ANALOG:
             self.reporting = True
             msg = bytearray([REPORT_ANALOG + self.pin_number, 1])
-            self.board.sp.write(msg)
+            self.board.conn.write(msg)
         else:
             self.port.enable_reporting()
             # TODO This is not going to work for non-optimized boards like Mega
@@ -502,7 +570,7 @@ class Pin(object):
         if self.type == ANALOG:
             self.reporting = False
             msg = bytearray([REPORT_ANALOG + self.pin_number, 0])
-            self.board.sp.write(msg)
+            self.board.conn.write(msg)
         else:
             self.port.disable_reporting()
             # TODO This is not going to work for non-optimized boards like Mega
@@ -538,12 +606,12 @@ class Pin(object):
                     self.port.write()
                 else:
                     msg = bytearray([DIGITAL_MESSAGE, self.pin_number, value])
-                    self.board.sp.write(msg)
+                    self.board.conn.write(msg)
             elif self.mode is PWM:
                 value = int(round(value * 255))
                 msg = bytearray([ANALOG_MESSAGE + self.pin_number, value % 128, value >> 7])
-                self.board.sp.write(msg)
+                self.board.conn.write(msg)
             elif self.mode is SERVO:
                 value = int(value)
                 msg = bytearray([ANALOG_MESSAGE + self.pin_number, value % 128, value >> 7])
-                self.board.sp.write(msg)
+                self.board.conn.write(msg)

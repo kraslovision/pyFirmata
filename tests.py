@@ -38,10 +38,10 @@ class TestBoardMessages(BoardBaseTest):
     # TODO Test layout of Board Mega
     def assert_serial(self, *incoming_bytes):
         serial_msg = bytearray()
-        res = self.board.sp.read()
+        res = self.board.conn.read()
         while res:
             serial_msg += res
-            res = self.board.sp.read()
+            res = self.board.conn.read()
         self.assertEqual(bytearray(incoming_bytes), serial_msg)
 
     # First test the handlers
@@ -85,13 +85,13 @@ class TestBoardMessages(BoardBaseTest):
         self.assertEqual(self.board.analog[4].read(), None)
         self.assertEqual(self.board.analog[4].reporting, False)
         # Should do nothing as the pin isn't set to report
-        self.board.sp.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
+        self.board.conn.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
         self.board.iterate()
         self.assertEqual(self.board.analog[4].read(), None)
         self.board.analog[4].enable_reporting()
-        self.board.sp.clear()
+        self.board.conn.clear()
         # This should set analog port 4 to 1
-        self.board.sp.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
+        self.board.conn.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
         self.board.iterate()
         self.assertEqual(self.board.analog[4].read(), 1.0)
         self.board._stored_data = []
@@ -187,12 +187,12 @@ class TestBoardMessages(BoardBaseTest):
         # A digital message sets the value for a whole port. We will set pin
         # 9 (on port 1) to 1 to test if this is working.
         self.board.digital[9].mode = pyfirmata.INPUT
-        self.board.sp.clear()  # clear mode sent over the wire.
+        self.board.conn.clear()  # clear mode sent over the wire.
         # Create the mask
         mask = 0
         mask |= 1 << (9 - 8)  # set the bit for pin 9 to to 1
         self.assertEqual(self.board.digital[9].read(), None)
-        self.board.sp.write([pyfirmata.DIGITAL_MESSAGE + 1, mask % 128, mask >> 7])
+        self.board.conn.write([pyfirmata.DIGITAL_MESSAGE + 1, mask % 128, mask >> 7])
         self.board.iterate()
         self.assertEqual(self.board.digital[9].read(), True)
 
@@ -203,7 +203,7 @@ class TestBoardMessages(BoardBaseTest):
     # 2  minor version (0-127)
     def test_incoming_report_version(self):
         self.assertEqual(self.board.firmata_version, None)
-        self.board.sp.write([pyfirmata.REPORT_VERSION, 2, 1])
+        self.board.conn.write([pyfirmata.REPORT_VERSION, 2, 1])
         self.board.iterate()
         self.assertEqual(self.board.firmata_version, (2, 1))
 
@@ -224,7 +224,7 @@ class TestBoardMessages(BoardBaseTest):
                2,
                1] + list(str_to_two_byte_iter('Firmware_name')) + \
               [pyfirmata.END_SYSEX]
-        self.board.sp.write(msg)
+        self.board.conn.write(msg)
         self.board.iterate()
         self.assertEqual(self.board.firmware, 'Firmware_name')
         self.assertEqual(self.board.firmware_version, (2, 1))
@@ -275,8 +275,8 @@ class TestBoardMessages(BoardBaseTest):
 
     def test_receive_sysex_message(self):
         sysex = bytearray([0xF0, 0x79, 2, 1, ord('a'), 0, ord('b'), 0, ord('c'), 0, 0xF7])
-        self.board.sp.write(sysex)
-        while len(self.board.sp):
+        self.board.conn.write(sysex)
+        while len(self.board.conn):
             self.board.iterate()
         self.assertEqual(self.board.firmware_version, (2, 1))
         self.assertEqual(self.board.firmware, 'abc')
@@ -287,14 +287,14 @@ class TestBoardMessages(BoardBaseTest):
         ignored to prevent cascading errors when missing a byte.
         """
         self.board.analog[4].enable_reporting()
-        self.board.sp.clear()
+        self.board.conn.clear()
         # Crap
-        self.board.sp.write([i for i in range(10)])
+        self.board.conn.write([i for i in range(10)])
         # This should set analog port 4 to 1
-        self.board.sp.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
+        self.board.conn.write([pyfirmata.ANALOG_MESSAGE + 4, 127, 7])
         # Crap
-        self.board.sp.write([10 - i for i in range(10)])
-        while len(self.board.sp):
+        self.board.conn.write([10 - i for i in range(10)])
+        while len(self.board.conn):
             self.board.iterate()
         self.assertEqual(self.board.analog[4].read(), 1.0)
 

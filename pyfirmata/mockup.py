@@ -46,11 +46,14 @@ class MockupSerial(deque):
     def inWaiting(self):
         return len(self)
 
+    def bytes_available(self):
+        return self.inWaiting()
+
 
 class MockupBoard(pyfirmata.Board):
 
     def __init__(self, port, layout, values_dict={}):
-        self.sp = MockupSerial(port, 57600)
+        self.conn = MockupSerial(port, 57600)
         self.setup_layout(layout)
         self.values_dict = values_dict
         self.id = 1
