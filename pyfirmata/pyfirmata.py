@@ -306,6 +306,21 @@ class Board(object):
             pin.enable_reporting()
         return pin
 
+    def release_pin(self, pin_def):
+        if type(pin_def) == list:
+            bits = pin_def
+        else:
+            bits = pin_def.split(':')
+
+        a_d = bits[0] == 'a' and 'analog' or 'digital'
+        part = getattr(self, a_d)
+        pin_nr = int(bits[1])
+
+        pin = part[pin_nr]
+        self.taken[a_d][pin_nr] = False
+        if pin.type is ANALOG:
+            pin.disable_reporting()
+
     def pass_time(self, t):
         """Non-blocking time-out for ``t`` seconds."""
         cont = time.time() + t
